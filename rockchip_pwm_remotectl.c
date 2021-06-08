@@ -13,19 +13,29 @@
 #include <linux/platform_device.h>
 #include <linux/input.h>
 #include <linux/workqueue.h>
-#include <linux/wakelock.h>
 #include <linux/slab.h>
-#include <linux/rockchip/rockchip_sip.h>
+//#include <linux/rockchip/rockchip_sip.h>
+#include <linux/arm-smccc.h>
 #include <linux/leds.h>
 #include <linux/fb.h>
 
 #include "rockchip_pwm_remotectl.h"
+
 
 /*sys/module/rk_pwm_remotectl/parameters,
 modify code_print to change the value*/
 
 static int rk_remote_print_code;
 static bool remote_suspend = false;
+
+static int sip_smc_remotectl_config(u32 func, u32 data)
+{
+    struct arm_smccc_res res;
+
+    arm_smccc_smc(0x8200000b, func, data, 0 ,0 ,0 ,0 ,0, &res);
+    return res.a0;
+}
+
 module_param_named(code_print, rk_remote_print_code, int, 0644);
 #define DBG_CODE(args...) \
 	do { \
@@ -91,7 +101,7 @@ struct rkxx_remotectl_drvdata {
 	struct input_dev *input;
 	struct timer_list timer;
 	struct tasklet_struct remote_tasklet;
-	struct wake_lock remotectl_wake_lock;
+	struct wakeup_source remotectl_wake_lock;
 };
 
 static struct rkxx_remotectl_button *remotectl_button;
@@ -304,11 +314,11 @@ static void rk_pwm_remotectl_do_something(unsigned long  data)
 	}
 }
 
-static void rk_pwm_remotectl_timer(unsigned long _data)
+static void rk_pwm_remotectl_timer(struct timer_list *_data)
 {
 	struct rkxx_remotectl_drvdata *ddata;
 
-	ddata =  (struct rkxx_remotectl_drvdata *)_data;
+	ddata =  from_timer(ddata, _data, timer);
 	if (ddata->press != ddata->pre_press) {
 		ddata->pre_press = 0;
 		ddata->press = 0;
@@ -353,7 +363,7 @@ static irqreturn_t rockchip_pwm_irq(int irq, void *dev_id)
 	writel_relaxed(PWM_CH_INT(id), ddata->base + PWM_REG_INTSTS(id));
 #if ! defined(CONFIG_RK_IR_NO_DEEP_SLEEP)
 	if (ddata->state == RMC_PRELOAD)
-		wake_lock_timeout(&ddata->remotectl_wake_lock, HZ);
+		__pm_wakeup_event(&ddata->remotectl_wake_lock, HZ);
 #endif
 	return IRQ_HANDLED;
 }
@@ -411,7 +421,7 @@ static int remotectl_fb_event_notify(struct notifier_block *self, unsigned long 
 {
 	struct fb_event *event = data;
 
-	if (action == FB_EARLY_EVENT_BLANK) {
+	if (action == 0x10) {
 		switch (*((int *)event->data)) {
 			case FB_BLANK_UNBLANK:
 				break;
@@ -567,12 +577,16 @@ static int rk_pwm_probe(struct platform_device *pdev)
 	input_set_capability(input, EV_KEY, KEY_WAKEUP);
 	device_init_wakeup(&pdev->dev, 1);
 	enable_irq_wake(irq);
-	setup_timer(&ddata->timer, rk_pwm_remotectl_timer,
-		    (unsigned long)ddata);
-	wake_lock_init(&ddata->remotectl_wake_lock,
-		       WAKE_LOCK_SUSPEND, "rockchip_pwm_remote");
+	timer_setup(&ddata->timer, rk_pwm_remotectl_timer, 0);
+    if(&ddata->remotectl_wake_lock){
+        memset(&ddata->remotectl_wake_lock, 0, sizeof(ddata->remotectl_wake_lock));
+        ddata->remotectl_wake_lock.name = "rockchip_pwm_remote";
+    }
+    wakeup_source_add(&ddata->remotectl_wake_lock);
+//	wake_lock_init(&ddata->remotectl_wake_lock,
+//		       WAKE_LOCK_SUSPEND, "rockchip_pwm_remote");
 #if defined(CONFIG_RK_IR_NO_DEEP_SLEEP)
-    wake_lock(&ddata->remotectl_wake_lock);
+    __pm_stay_awake(&ddata->remotectl_wake_lock);
 #endif
 	cpumask_clear(&cpumask);
 	cpumask_set_cpu(cpu_id, &cpumask);
@@ -631,7 +645,8 @@ static int rk_pwm_probe(struct platform_device *pdev)
 end:
 	return 0;
 error_irq:
-	wake_lock_destroy(&ddata->remotectl_wake_lock);
+	wakeup_source_remove(&ddata->remotectl_wake_lock);
+    wakeup_source_destroy(&ddata->remotectl_wake_lock);
 error_pclk:
 	clk_unprepare(p_clk);
 error_clk:
@@ -646,7 +661,7 @@ static int rk_pwm_remove(struct platform_device *pdev)
 #endif
 	led_trigger_unregister_simple(ledtrig_ir_click);
 #if defined(CONFIG_RK_IR_NO_DEEP_SLEEP)
-    wake_unlock(&ddata->remotectl_wake_lock);
+    __pm_relax(&ddata->remotectl_wake_lock);
 #endif
 	return 0;
 }

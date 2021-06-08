@@ -117,6 +117,15 @@ enum pwm_div {
 #define PWM_CH_POL(n)   BIT(n+8)
 
 
+#define REMOTECTL_SET_IRQ       0xf0
+#define REMOTECTL_SET_PWM_CH    0xf1
+#define REMOTECTL_SET_PWRKEY    0xf2
+#define REMOTECTL_GET_WAKEUP_STATE 0xf3
+#define REMOTECTL_ENABLE        0xf4
+
+#define REMOTECTL_PWRKEY_WAKEUP 0xdeadbeaf
+
+
 /********************************************************************
 **                          结构定义                                *
 ********************************************************************/
